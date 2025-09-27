@@ -5,6 +5,20 @@ from PyQt5.QtCore import QPoint, QRect
 import math
 import random
 import os
+import enum
+import logging
+
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# 定义动画状态
+class AnimationState(enum.Enum):
+    IDLE = 1
+    APPROACHING = 2
+    WAITING = 3
+    PASSING = 4
+    EXITING = 5
+    RESETTING = 6
 
 class QtAnimationWidget(QWidget):
     animation_info_updated = pyqtSignal(dict)
@@ -14,6 +28,7 @@ class QtAnimationWidget(QWidget):
         self.setFixedSize(900, 500)
         self.setStyleSheet("background-color: black;")
 
+        # 颜色定义（保持原有代码）
         self.white = QColor(255, 255, 255)
         self.blue = QColor(0, 0, 255)
         self.green = QColor(0, 255, 0)
@@ -36,28 +51,35 @@ class QtAnimationWidget(QWidget):
         self.car_colors = [self.blue, self.red, self.green, self.orange, self.purple, self.cyan]
         self.plate_prefixes = ['京', '沪', '粤', '苏', '浙', '鲁', '川', '渝']
 
-        self.car_x = -200
+        # 动画参数（可配置）
+        self.car_initial_x = -200
         self.car_y = 450
-        self.barrier_raised = False
+        self.car_speed = 3
+        self.barrier_anim_speed = 1.5
+        self.barrier_x = 550
+        self.approach_zone = (350, 450)
+        self.pass_zone = 650
+        self.exit_zone = 900
+        self.barrier_anim_threshold = 0.95
+
+        # 动画状态
+        self.car_x = self.car_initial_x
         self.barrier_anim = 0
-        self.car_speed = 0
         self.car_moving = False
         self.auto_mode_triggered = False
-        self.car_passed = False
-        self.barrier_lowering = False
-
         self.car_color = self.blue
         self.current_plate = "京A12345"
         self.current_type = 'small_car'
-
         self.is_running = False
         self.auto_demo = False
         self.is_first_draw = True
         self.last_plate = None
+        self.state = AnimationState.IDLE  # 初始状态
 
+        # 字体加载（优化：使用相对路径）
         font_db = QFontDatabase()
         font_path = os.path.join(os.path.dirname(__file__), "SimHei.ttf")
-        print(f"字体文件路径: {os.path.abspath(font_path)}")
+        logging.info(f"尝试加载字体文件: {os.path.abspath(font_path)}")
         try:
             if os.path.exists(font_path):
                 font_id = font_db.addApplicationFont(font_path)
@@ -74,15 +96,16 @@ class QtAnimationWidget(QWidget):
             else:
                 raise Exception("项目文件夹中未找到 SimHei.ttf")
         except Exception as e:
-            print(f"字体加载错误: {e}")
+            logging.error(f"字体加载错误: {e}")
             try:
                 self.font_chinese = QFont("Microsoft YaHei", 16)
                 self.font_large = QFont("Microsoft YaHei", 16)
             except:
-                print("Microsoft YaHei 加载失败，回退到 Arial")
+                logging.error("Microsoft YaHei 加载失败，回退到 Arial")
                 self.font_chinese = QFont("Arial", 16)
                 self.font_large = QFont("Arial", 16)
 
+        # 定时器
         self.anim_timer = QTimer(self)
         self.anim_timer.timeout.connect(self.update_animation)
         self.anim_timer.setInterval(33)
@@ -93,6 +116,7 @@ class QtAnimationWidget(QWidget):
         numbers = ''.join(random.choices('0123456789', k=5))
         plate = f"{prefix}{numbers}"
         car_type = random.choice(['small_car', 'small_car', 'large_car'])
+        logging.info(f"生成新车辆: 车牌={plate}, 车型={car_type}")
         return color, plate, car_type
 
     def update_vehicle_info(self, plate_info):
@@ -102,104 +126,107 @@ class QtAnimationWidget(QWidget):
         self.car_color = color_map.get(car_type, self.blue)
         self.current_plate = plate_text
         self.current_type = car_type
-        print(f"动画系统收到车辆更新: {plate_text}, 车型: {car_type}")
+        logging.info(f"更新车辆信息: 车牌={plate_text}, 车型={car_type}")
 
     def start_animation(self):
-        print("启动动画")
+        logging.info("启动动画")
         self.is_running = True
         self.auto_demo = False
         if not self.anim_timer.isActive():
             self.anim_timer.start()
-            print("动画定时器已启动")
+            logging.info("动画定时器已启动")
 
     def stop_animation(self):
-        print("停止动画")
+        logging.info("停止动画")
         self.is_running = False
         self.auto_demo = False
+        self.state = AnimationState.IDLE
         if self.anim_timer.isActive():
             self.anim_timer.stop()
-            print("动画定时器已停止")
+            logging.info("动画定时器已停止")
 
     def start_auto_demo(self):
-        print("启动自动演示")
+        logging.info("启动自动演示")
         self.is_running = True
         self.auto_demo = True
         self.auto_mode_triggered = True
+        self.state = AnimationState.APPROACHING
         self.car_moving = True
-        self.car_speed = 3
+        self.car_x = self.car_initial_x
         self.car_color, self.current_plate, self.current_type = self.generate_random_car()
         if not self.anim_timer.isActive():
             self.anim_timer.start()
-            print("自动演示定时器已启动")
+            logging.info("自动演示定时器已启动")
 
     def update_animation(self):
-        try:
-            if not self.is_running:
-                print("动画未运行，状态：未启动")
-                return
-            dt = 1/60.0
-            if self.auto_demo and self.auto_mode_triggered:
-                if self.car_x > 350 and self.car_x < 450 and not self.barrier_raised and not self.barrier_lowering:
-                    self.car_speed = 0
-                    self.car_moving = False
-                    self.barrier_raised = True
-                    self.barrier_lowering = False
-                    print("道闸抬起，车辆停止")
-                if self.barrier_raised and self.barrier_anim > 0.95 and not self.car_moving:
-                    self.car_moving = True
-                    self.car_speed = 3
-                    print("道闸完全抬起，车辆继续移动")
-                if self.car_x > 650 and self.barrier_raised and not self.car_passed:
-                    self.car_passed = True
-                    self.barrier_raised = False
-                    self.barrier_lowering = True
-                    print("车辆通过，道闸开始放下")
-                if self.barrier_lowering and self.barrier_anim < 0.05:
-                    self.barrier_lowering = False
-                    print("道闸完全放下")
-                if self.car_x >= 900:
-                    print(f"车辆超出范围，重置: {self.current_plate}")
-                    self.car_color, self.current_plate, self.current_type = self.generate_random_car()
-                    self.car_x = -200
-                    self.car_y = 450
-                    self.barrier_raised = False
-                    self.barrier_anim = 0
-                    self.car_speed = 3
-                    self.car_moving = True
-                    self.auto_mode_triggered = True
-                    self.car_passed = False
-                    self.barrier_lowering = False
-                    self.is_first_draw = True
-            if self.barrier_raised:
-                self.barrier_anim = min(1.0, self.barrier_anim + dt * 1.5)
-            elif self.barrier_lowering:
-                self.barrier_anim = max(0.0, self.barrier_anim - dt * 1.5)
-            if self.car_moving:
-                self.car_x = int(self.car_x + self.car_speed * 60 * dt)
-            if self.car_x > 900:
-                print(f"车辆超出范围，重置: {self.current_plate}")
-                self.car_color, self.current_plate, self.current_type = self.generate_random_car()
-                self.car_x = -200
-                self.car_y = 450
-                self.barrier_raised = False
-                self.barrier_anim = 0
-                self.car_speed = 3
-                self.car_moving = True
-                self.auto_mode_triggered = True
-                self.car_passed = False
-                self.barrier_lowering = False
-                self.is_first_draw = True
-            self.animation_info_updated.emit({
-                'car_position': self.car_x,
-                'barrier_status': 'raised' if self.barrier_raised else 'lowered',
-                'car_moving': self.car_moving,
-                'current_plate': self.current_plate
-            })
-            self.update()
-        except Exception as e:
-            print(f"动画更新错误: {e}")
-            self.stop_animation()
+        if not self.is_running:
+            logging.info("动画未运行，状态：未启动")
+            return
 
+        dt = 1/60.0  # 固定时间步长
+
+        # 状态机逻辑
+        if self.state == AnimationState.IDLE:
+            if self.auto_mode_triggered:
+                self.state = AnimationState.APPROACHING
+                self.car_moving = True
+                logging.info("状态转换: IDLE -> APPROACHING")
+
+        elif self.state == AnimationState.APPROACHING:
+            if self.approach_zone[0] < self.car_x < self.approach_zone[1] and self.barrier_anim < self.barrier_anim_threshold:
+                self.car_moving = False
+                self.barrier_anim = min(1.0, self.barrier_anim + dt * self.barrier_anim_speed)
+                self.state = AnimationState.WAITING
+                logging.info("状态转换: APPROACHING -> WAITING")
+            else:
+                self.car_moving = True
+
+        elif self.state == AnimationState.WAITING:
+            self.barrier_anim = min(1.0, self.barrier_anim + dt * self.barrier_anim_speed)
+            if self.barrier_anim > self.barrier_anim_threshold:
+                self.car_moving = True
+                self.state = AnimationState.PASSING
+                logging.info("状态转换: WAITING -> PASSING")
+
+        elif self.state == AnimationState.PASSING:
+            if self.car_x > self.pass_zone:
+                self.barrier_anim = max(0.0, self.barrier_anim - dt * self.barrier_anim_speed)
+                self.state = AnimationState.EXITING
+                logging.info("状态转换: PASSING -> EXITING")
+
+        elif self.state == AnimationState.EXITING:
+            self.barrier_anim = max(0.0, self.barrier_anim - dt * self.barrier_anim_speed)
+            if self.car_x >= self.exit_zone:
+                self.state = AnimationState.RESETTING
+                logging.info("状态转换: EXITING -> RESETTING")
+
+        elif self.state == AnimationState.RESETTING:
+            self.car_color, self.current_plate, self.current_type = self.generate_random_car()
+            self.car_x = self.car_initial_x
+            self.car_y = 450
+            self.barrier_anim = 0
+            self.car_moving = True
+            self.auto_mode_triggered = True
+            self.state = AnimationState.APPROACHING
+            logging.info("状态转换: RESETTING -> APPROACHING")
+
+        # 更新车辆位置
+        if self.car_moving:
+            self.car_x += self.car_speed * 60 * dt
+
+        # 发出状态信号
+        self.animation_info_updated.emit({
+            'barrier_status': 'raised' if self.barrier_anim > 0 else 'lowered',
+            'car_moving': self.car_moving,
+            'current_plate': self.current_plate,
+            'state': self.state.name
+        })
+
+        # 触发重绘
+        self.update()
+
+    # 以下方法（paintEvent, draw_road, draw_booth, draw_barrier, draw_car 等）保持不变
+    # ... 省略未修改的代码 ...
     def paintEvent(self, event):
         try:
             painter = QPainter(self)
@@ -251,15 +278,22 @@ class QtAnimationWidget(QWidget):
 
     def draw_barrier(self, painter, x=550, y=400):
         try:
+            # 道闸底座
             painter.fillRect(x - 30, y + 10, 60, 50, self.gray)
             painter.drawRect(x - 30, y + 10, 60, 50)
+
+            # 道闸立柱
             painter.fillRect(x - 10, y - 100, 20, 110, self.silver)
-            current_angle = 90 * self.barrier_anim if self.barrier_raised else 0
+
+            # 道闸杆
+            current_angle = 90 * self.barrier_anim  # 使用 barrier_anim 控制角度
             end_x = int(x + 180 * math.cos(math.radians(current_angle)))
             end_y = int(y - 180 * math.sin(math.radians(current_angle)))
             pen = QPen(self.red, 20)
             painter.setPen(pen)
             painter.drawLine(x, y, end_x, end_y)
+
+            # 条纹
             for i in range(1, 5):
                 stripe_pos = i / 5.0
                 stripe_x = int(x + (end_x - x) * stripe_pos)
@@ -269,14 +303,17 @@ class QtAnimationWidget(QWidget):
                 pen = QPen(self.white, 4)
                 painter.setPen(pen)
                 painter.drawLine(stripe_x - dx, stripe_y + dy, stripe_x + dx, stripe_y - dy)
-            color = self.green if self.barrier_raised else self.red
+
+            # 道闸灯
+            color = self.green if self.barrier_anim > 0 else self.red
             painter.setBrush(QBrush(color))
             painter.drawEllipse(int(end_x - 8), int(end_y - 8), 16, 16)
             painter.setBrush(QBrush(self.white))
             painter.drawEllipse(int(end_x - 4), int(end_y - 4), 8, 8)
             painter.setBrush(Qt.NoBrush)
         except Exception as e:
-            print(f"绘制道闸错误: {e}")
+            logging.error(f"绘制道闸错误: {e}")
+            self.error_occurred.emit(f"绘制道闸错误: {e}")
 
     def draw_car(self, painter, angle=0):
         try:
