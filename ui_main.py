@@ -1,6 +1,7 @@
 # ui_main.py
 import sys
 import math
+import logging
 import json
 import os
 import cv2
@@ -308,25 +309,117 @@ class LicensePlateRecognizer(QMainWindow):
         else:
             self.result_text.append(f"未从{source_type}中识别到车牌")
 
+    # def save_to_database(self, results):
+    #     """将识别结果保存到数据库并处理进入/离开逻辑"""
+    #     try:
+    #         conn = mysql.connector.connect(**db_config)
+    #         cursor = conn.cursor(dictionary=True)
+    #
+    #         for result in results:
+    #             plate_number = result['plate']
+    #             plate_color = 'blue'  # 假设车牌颜色为蓝色（可根据实际需求修改）
+    #             entry_time = datetime.now()
+    #
+    #             # 检查车牌是否已存在
+    #             cursor.execute(
+    #                 "SELECT plate_id FROM license_plates WHERE plate_number = %s",
+    #                 (plate_number,)
+    #             )
+    #             plate = cursor.fetchone()
+    #             if not plate:
+    #                 # 插入新车牌
+    #                 cursor.execute(
+    #                     "INSERT INTO license_plates (plate_number, plate_color) VALUES (%s, %s)",
+    #                     (plate_number, plate_color)
+    #                 )
+    #                 plate_id = cursor.lastrowid
+    #             else:
+    #                 plate_id = plate['plate_id']
+    #
+    #             # 检查是否有未完成的停车记录
+    #             cursor.execute(
+    #                 """
+    #                 SELECT record_id, space_id FROM parking_records
+    #                 WHERE plate_id = %s AND status = 'parking'
+    #                 """,
+    #                 (plate_id,)
+    #             )
+    #             record = cursor.fetchone()
+    #
+    #             if record:
+    #                 # 车辆离开，更新离开时间并计算费用
+    #                 exit_time = datetime.now()
+    #                 total_amount = self.calculate_fee(entry_time, exit_time, plate_color)
+    #                 cursor.execute(
+    #                     "UPDATE parking_records SET exit_time = %s, status = 'completed' WHERE record_id = %s",
+    #                     (exit_time, record['record_id'])
+    #                 )
+    #                 cursor.execute(
+    #                     "UPDATE parking_spaces SET status = 'free' WHERE space_id = %s",
+    #                     (record['space_id'],)
+    #                 )
+    #                 cursor.execute(
+    #                     "INSERT INTO parking_fees (record_id, total_amount, payment_status) VALUES (%s, %s, %s)",
+    #                     (record['record_id'], total_amount, 'unpaid')
+    #                 )
+    #                 self.result_text.append(f"车辆 {plate_number} 离开，费用: {total_amount:.2f} 元")
+    #             else:
+    #                 # 车辆进入，分配空闲车位并记录
+    #                 cursor.execute(
+    #                     "SELECT space_id FROM parking_spaces WHERE status = 'free' LIMIT 1"
+    #                 )
+    #                 space = cursor.fetchone()
+    #                 if space:
+    #                     space_id = space['space_id']
+    #                     cursor.execute(
+    #                         """
+    #                         INSERT INTO parking_records (plate_id, space_id, entry_time, status)
+    #                         VALUES (%s, %s, %s, %s)
+    #                         """,
+    #                         (plate_id, space_id, entry_time, 'parking')
+    #                     )
+    #                     cursor.execute(
+    #                         "UPDATE parking_spaces SET status = 'occupied' WHERE space_id = %s",
+    #                         (space_id,)
+    #                     )
+    #                     self.result_text.append(f"车辆 {plate_number} 进入，分配车位 {space_id}")
+    #                 else:
+    #                     self.result_text.append(f"车辆 {plate_number} 进入失败：无空闲车位")
+    #
+    #             conn.commit()
+    #
+    #         cursor.close()
+    #         conn.close()
+    #
+    #     except Exception as e:
+    #         self.result_text.append(f"数据库操作错误: {e}")
+    #         QMessageBox.critical(self, "错误", f"数据库操作失败: {e}")
+    # ui_main.py (仅展示修改部分)
     def save_to_database(self, results):
-        """将识别结果保存到数据库并处理进入/离开逻辑"""
         try:
             conn = mysql.connector.connect(**db_config)
             cursor = conn.cursor(dictionary=True)
 
+            processed_plates = set()
+
             for result in results:
                 plate_number = result['plate']
-                plate_color = 'blue'  # 假设车牌颜色为蓝色（可根据实际需求修改）
+                if plate_number in processed_plates:
+                    logging.info(f"忽略重复车牌: {plate_number}")
+                    continue
+                processed_plates.add(plate_number)
+
+                plate_color = result.get('plate_color', 'blue')
                 entry_time = datetime.now()
 
-                # 检查车牌是否已存在
+                # 检查并更新车牌信息
                 cursor.execute(
-                    "SELECT plate_id FROM license_plates WHERE plate_number = %s",
+                    "SELECT plate_id, plate_color FROM license_plates WHERE plate_number = %s",
                     (plate_number,)
                 )
                 plate = cursor.fetchone()
                 if not plate:
-                    # 插入新车牌
+                    logging.info(f"插入新车牌: {plate_number}, 颜色: {plate_color}")
                     cursor.execute(
                         "INSERT INTO license_plates (plate_number, plate_color) VALUES (%s, %s)",
                         (plate_number, plate_color)
@@ -334,21 +427,29 @@ class LicensePlateRecognizer(QMainWindow):
                     plate_id = cursor.lastrowid
                 else:
                     plate_id = plate['plate_id']
+                    if plate['plate_color'] != plate_color:
+                        logging.info(f"更新车牌颜色: {plate_number}, 从 {plate['plate_color']} 到 {plate_color}")
+                        cursor.execute(
+                            "UPDATE license_plates SET plate_color = %s WHERE plate_id = %s",
+                            (plate_color, plate_id)
+                        )
+                    else:
+                        logging.info(f"车牌 {plate_number} 已存在，plate_id={plate_id}, 无需更新颜色")
 
-                # 检查是否有未完成的停车记录
+                # 检查停车记录
                 cursor.execute(
                     """
-                    SELECT record_id, space_id FROM parking_records
+                    SELECT record_id, space_id, entry_time FROM parking_records
                     WHERE plate_id = %s AND status = 'parking'
                     """,
                     (plate_id,)
                 )
                 record = cursor.fetchone()
+                direction = 'exit' if record else 'entry'
 
                 if record:
-                    # 车辆离开，更新离开时间并计算费用
                     exit_time = datetime.now()
-                    total_amount = self.calculate_fee(entry_time, exit_time, plate_color)
+                    total_amount = self.calculate_fee(record['entry_time'], exit_time, plate_color)
                     cursor.execute(
                         "UPDATE parking_records SET exit_time = %s, status = 'completed' WHERE record_id = %s",
                         (exit_time, record['record_id'])
@@ -362,8 +463,8 @@ class LicensePlateRecognizer(QMainWindow):
                         (record['record_id'], total_amount, 'unpaid')
                     )
                     self.result_text.append(f"车辆 {plate_number} 离开，费用: {total_amount:.2f} 元")
+                    logging.info(f"车辆 {plate_number} 离开，record_id={record['record_id']}, 费用={total_amount:.2f}")
                 else:
-                    # 车辆进入，分配空闲车位并记录
                     cursor.execute(
                         "SELECT space_id FROM parking_spaces WHERE status = 'free' LIMIT 1"
                     )
@@ -382,15 +483,49 @@ class LicensePlateRecognizer(QMainWindow):
                             (space_id,)
                         )
                         self.result_text.append(f"车辆 {plate_number} 进入，分配车位 {space_id}")
+                        logging.info(f"车辆 {plate_number} 进入，分配车位 {space_id}")
                     else:
                         self.result_text.append(f"车辆 {plate_number} 进入失败：无空闲车位")
+                        logging.warning(f"车辆 {plate_number} 进入失败：无空闲车位")
+                        continue
 
                 conn.commit()
+
+                # 联表查询最新状态
+                cursor.execute(
+                    """
+                    SELECT pr.record_id, lp.plate_number, lp.plate_color, pr.entry_time, pr.exit_time, pr.status
+                    FROM parking_records pr
+                    JOIN license_plates lp ON pr.plate_id = lp.plate_id
+                    WHERE lp.plate_number = %s
+                    ORDER BY pr.entry_time DESC LIMIT 1
+                    """,
+                    (plate_number,)
+                )
+                latest_record = cursor.fetchone()
+                if latest_record:
+                    self.result_text.append(
+                        f"车牌: {latest_record['plate_number']}, 颜色: {latest_record['plate_color']}, "
+                        f"状态: {latest_record['status']}, 进入时间: {latest_record['entry_time']}"
+                    )
+                    logging.info(f"最新记录: {latest_record}")
+
+                plate_info = {
+                    'plate': plate_number,
+                    'type': result['type'],
+                    'plate_color': plate_color,
+                    'direction': direction,
+                    'bbox': result['bbox']
+                }
+                if self.animation_window:
+                    self.animation_window.update_plate_info(plate_info)
+                    logging.info(f"传递车牌信息到动画: {plate_info}")
 
             cursor.close()
             conn.close()
 
         except Exception as e:
+            logging.error(f"数据库操作错误: {e}")
             self.result_text.append(f"数据库操作错误: {e}")
             QMessageBox.critical(self, "错误", f"数据库操作失败: {e}")
 
